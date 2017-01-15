@@ -1,0 +1,468 @@
+#!/usr/bin/python3
+# -*- mode: python; coding: utf-8 -*-
+"""
+Usage: mupload [OPTIONS] [FILE [FILE …]]
+
+Positional arguments:
+  FILE                  file(s) to upload
+
+Optional arguments:
+  -h, --help            show this help message and exit
+  -V, --version         show version information and exit
+  -c, --copyright       show copying policy and exit
+  -M, --no-magic        do not use file magic
+  -u URL, --url URL     MORPHiS URL (default: http://localhost:4251)
+  -k PRIVATE_KEY, --private-key PRIVATE_KEY
+                        name of private key file
+  --unique-key          use a unique, random key for each file
+  -n, --dry-run         list details, but do not upload files
+  -v, --verbose         increase verbosity
+"""
+##############################################################################
+# This program is free software; you can redistribute it and/or modify it    #
+# under the terms of the GNU General Public License as published by the Free #
+# Software Foundation; either version 3 of the License, or (at your option)  #
+# any later version.                                                         #
+#                                                                            #
+# This program is distributed in the hope that it will be useful, but with-  #
+# out any warranty; without even the implied warranty of merchantability or  #
+# fitness for a particular purpose.  See the GNU General Public License for  #
+# more details.  <http://gplv3.fsf.org/>                                     #
+##############################################################################
+
+import sys
+import os
+import logging
+import argparse
+import mimetypes
+import re
+
+from uuid import uuid4
+from datetime import datetime
+from urllib.parse import (urlparse, urlunparse)
+
+try:
+    from locale import (Error, setlocale, LC_ALL)
+    _ = setlocale(LC_ALL, '')
+except (ImportError, NameError, Error):
+    pass
+
+DEBUG = os.environ.get('DEBUG', 'False').upper()[0] in '1JTY'  # 1/Ja/True/Yes
+MYLOG = logging.getLogger(__name__)
+
+# Third party modules
+
+# http://python-requests.org/
+try:
+    import requests
+except ImportError as error:
+    MYLOG.critical(str(error))
+    MYLOG.critical("You can install it with ‘pip install requests’")
+    MYLOG.critical('Please see http://python-requests.org/')
+    sys.exit(1)
+
+# http://darwinsys.com/file/
+try:
+    import magic
+    USE_MAGIC = True
+    # Check that we have the correct magic module
+    for attribute in ('open', 'NONE', 'MIME_TYPE', 'MIME_ENCODING'):
+        if not hasattr(magic, attribute):
+            USE_MAGIC = False
+            break
+except ImportError as error:
+    if DEBUG:
+        MYLOG.warning(str(error))
+    USE_MAGIC = False
+
+if DEBUG and not USE_MAGIC:
+    MYLOG.warning("Didn't find a usable ‘magic’ module.")
+    MYLOG.warning('Relying on mime.types only')
+
+__author__ = 'Klaus Alexander Seistrup <klaus@seistrup.dk>'
+__whoami__ = 'mupload'
+__revision__ = '2015-09-19'
+__version__ = '0.0.4b ({0})'.format(__revision__)
+__copyright__ = """\
+mupload {0}
+Copyright © 2015 Klaus Alexander Seistrup <klaus@seistrup.dk>
+
+This is free software; see the source for copying conditions.  There is no
+warranty; not even for merchantability or fitness for a particular purpose.\
+""".format(__version__)
+
+MORPHIS_URL = 'http://localhost:4251'
+MORPHIS_UPLOAD = '/.upload/upload'
+MORPHIS_GENERATE = '/.upload/generate'
+
+HTTPBIN_POST = 'https://httpbin.org/post'
+
+RX_PRIVATE_KEY = re.compile(r'<textarea [^>]+?>(.+?)</textarea>')
+RX_CSRF_TOKEN = re.compile(r'id="csrf_token" value="(.+?)"/>')
+RX_ALL_KEYS = re.compile(r'<a id="(.+?)" href="(.+?)">')
+
+# From MORPHiS' mbase32.py
+BASE32_CHARSET = '13456789abcdefghijkmnopqrstuwxyz'
+# From MORPHiS' base58.py
+BASE58_CHARSET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+
+
+class Config(dict):
+    """Dot style config"""
+    def __getattr__(self, attr):
+        return self.get(attr, None)
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+
+def die(message=None):
+    """Exit gracefully"""
+    if message:
+        if message.startswith('[') and message.count(']') > 0:
+            message = message.split(']', 1)[1].strip()
+        MYLOG.error(message)
+    sys.exit(1 if message else 0)
+
+
+def is_valid_key(key, charset):
+    """Check that all characters in key is in charset"""
+    for char in key:
+        if char not in charset:
+            return False
+    return True
+
+
+def is_valid_base32(key):
+    """Do we have a valid mbase32 key?"""
+    return is_valid_key(key, BASE32_CHARSET)
+
+
+def is_valid_base58(key):
+    """Do we have a valid base58 key?"""
+    return is_valid_key(key, BASE58_CHARSET)
+
+
+def get_morphis_url(thepath=None):
+    """Construct a valid MORPHiS URL based on ‘part’"""
+    (scheme, netloc, path, _, _, _) = tuple(urlparse(MORPHIS_URL))
+    if path is None:
+        path = '/'
+    if thepath is None:
+        thepath = path
+    return urlunparse((scheme, netloc, thepath, None, None, None))
+
+
+def get_headers():
+    """Custom HTTP headers"""
+    headers = {
+        'User-Agent': '/'.join((__whoami__, __version__)),
+        'X-Python-Version': '{0}.{1}.{2}'.format(*sys.version_info),
+        'X-UUID': str(uuid4()),
+    }
+    return headers
+
+
+def get_csrf_token(privkey=None):
+    """Get current CSRF token"""
+    if privkey is None:
+        morphis_upload = get_morphis_url(MORPHIS_UPLOAD)
+    else:
+        morphis_upload = get_morphis_url(
+            '/'.join((MORPHIS_UPLOAD, privkey))
+        )
+    response = requests.get(
+        morphis_upload, headers=get_headers()
+    )
+    (status_code, reason) = (response.status_code, response.reason)
+    if status_code == requests.codes.ok:
+        result = RX_CSRF_TOKEN.search(response.text)
+        if result is not None:
+            return result.group(1)
+        die('Cannot find CSRF token at URL {0}'.format(morphis_upload))
+    die('Get CSRF token: HTTP error {0}: {1}'.format(status_code, reason))
+
+
+def get_private_key():
+    """Get a random private key"""
+    morphis_generate = get_morphis_url(MORPHIS_GENERATE)
+    response = requests.get(
+        morphis_generate, headers=get_headers()
+    )
+    (status_code, reason) = (response.status_code, response.reason)
+    if status_code == requests.codes.ok:
+        result = RX_PRIVATE_KEY.search(response.text)
+        if result is not None:
+            return result.group(1)
+        die('Cannot find private key at URL {0}'.format(morphis_generate))
+    die('Get private key: HTTP error {0}: {1}'.format(status_code, reason))
+
+
+def get_file_version():
+    """Milliseconds since EPOCH"""
+    return str(int(round(datetime.utcnow().timestamp() * 1000)))
+
+
+def file_magic(filename):
+    """Use libmagic to establish filetype"""
+    if not USE_MAGIC:
+        return (None, None)
+    ms = magic.open(magic.NONE)
+    ms.load()
+    ms.setflags(magic.MIME_TYPE)
+    filetype = ms.file(filename)
+    ms.setflags(magic.MIME_ENCODING)
+    encoding = ms.file(filename)
+    ms.close()
+    return (filetype, encoding)
+
+
+def get_mime_type(filename, strict=True, default='application/octet-stream'):
+    """Attempt to guess the filetype"""
+    # We do not want filetypes like “inode/symlink”,
+    # so let's use the real path:
+    filename = os.path.realpath(filename)
+    # We do not know the filetype of an empty file,
+    # nor do we like filetypes like “inode/x-empty”,
+    # so let's just pretend it's the default type:
+    if os.path.getsize(filename) == 0:
+        return default
+    # Should we use mime.types (i.e., filetype based on filename extension)
+    # before ‘magic’ (e.g., filetype based on file contents)? Please chime
+    # in on <https://github.com/kseistrup/morphis-upload/issues/3>.
+    (filetype, encoding) = mimetypes.guess_type(filename, strict=strict)
+    if filetype is None:
+        (filetype, encoding) = file_magic(filename)
+    if encoding in {'binary'}:
+        encoding = None
+    if None not in (filetype, encoding):
+        return '{0}; charset={1}'.format(filetype, encoding)
+    return filetype or default
+
+
+def mupload(filename, privkey=None):
+    """Upload a file to MORPHiS"""
+    if privkey is None:
+        privkey = get_private_key()
+
+    file_data = dict(
+        fileToUpload=(
+            filename,
+            open(filename, 'rb'),
+            get_mime_type(filename)
+        )
+    )
+
+    form_data = dict(
+        path=filename,
+        mime_type=get_mime_type(filename),
+        privateKey=privkey,
+        csrf_token=get_csrf_token(privkey),
+        version=get_file_version()
+    )
+
+    response = requests.post(
+        HTTPBIN_POST if DEBUG else get_morphis_url(MORPHIS_UPLOAD),
+        files=file_data,
+        data=form_data,
+        headers=get_headers()
+    )
+    (status_code, reason) = (response.status_code, response.reason)
+
+    if status_code != requests.codes.ok:
+        die(
+            'Error uploading file {0}\nHTTP error {1}: {2}'.format(
+                filename,
+                status_code,
+                reason
+            )
+        )
+    return response.text
+
+
+def read_private_key_file(filename):
+    """Read the private key from a file"""
+    try:
+        with open(filename, 'r') as fp:
+            # Let's accept multi-line keys
+            privkey = re.sub(r'\s+', '', fp.read())
+            # Let's accept /dev/null
+            if not key:
+                return None
+            if is_valid_base58(privkey):
+                return privkey
+            die('Invalid base58 character in key: {0}'.format(filename))
+    except (FileNotFoundError, PermissionError, IOError) as error:
+        MYLOG.error('Cannot read private key.')
+        die(str(error))
+
+
+def only_files(iterable, unique=True):
+    """Filter out anything but [optionally unique] files"""
+    if unique:
+        cache = set()
+    for item in iterable:
+        if not os.path.isfile(item):
+            continue
+        # We use normpath() here so that we can filter out
+        # duplicate files. We do NOT use realpath() because
+        # we want to support uploading the same file to
+        # different keys by using e.g. symlinks.
+        normpath = os.path.normpath(item)
+        if unique:
+            if normpath in cache:
+                continue
+            cache.add(normpath)
+        yield normpath
+
+
+def readlines(fp):
+    """Iterate over the lines in a file"""
+    try:
+        for line in fp:
+            stripped = line.rstrip('\r\n\v\f')
+            if not stripped:
+                continue
+            yield stripped
+    except IOError as error:
+        die(str(error))
+    except KeyboardInterrupt:
+        die()
+
+
+def main(progname=__whoami__):
+    """Main entry point"""
+
+    parser = argparse.ArgumentParser(
+        prog=progname,
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument(
+        '-V',
+        '--version',
+        action='version',
+        version='%(prog)s/' + __version__,
+        help='show version information and exit'
+    )
+    parser.add_argument(
+        '-c',
+        '--copyright',
+        action='version',
+        version=__copyright__,
+        help='show copying policy and exit'
+    )
+    parser.add_argument(
+        '-M',
+        '--no-magic',
+        action='store_true',
+        help='do not use file magic'
+    )
+    parser.add_argument(
+        '-u',
+        '--url',
+        help='MORPHiS URL (default: {0})'.format(MORPHIS_URL)
+    )
+    parser.add_argument(
+        '-k',
+        '--private-key',
+        help='name of private key file'
+    )
+    parser.add_argument(
+        '-r',
+        '--unique-key',
+        action='store_true',
+        help='use a unique, random key for each file'
+    )
+    parser.add_argument(
+        '-n',
+        '--dry-run',
+        action='store_true',
+        help='list details, but do not upload files'
+    )
+    parser.add_argument(
+        '-v',
+        '--verbose',
+        action='store_true',
+        help='increase verbosity'
+    )
+    parser.add_argument(
+        'FILE',
+        nargs='*',
+        help='file(s) to upload'
+    )
+    args = parser.parse_args()
+
+    if DEBUG:
+        MYLOG.debug(args)
+
+    conf = Config()
+
+    if args.no_magic:
+        conf.use_magic = False
+    else:
+        conf.use_magic = USE_MAGIC
+
+    conf.url = args.url or MORPHIS_URL
+
+    if args.private_key:
+        privkey = read_private_key_file(args.private_key)
+    else:
+        privkey = os.environ.get('MORPHIS_PRIVATE_KEY', None)
+
+    if args.dry_run:
+        print(
+            'Using MORPHiS instance at\n\t{0}'.format(
+                get_morphis_url()
+            )
+        )
+        print()
+        if privkey is None:
+            privkey = 'Unique' if args.unique_key else 'None'
+        print('Private key')
+        while privkey:
+            print('\t{0}'.format(privkey[:64]))
+            privkey = privkey[64:]
+        print()
+        print('CSRF token')
+        token = get_csrf_token()
+        while token:
+            print('\t{0}'.format(token[:64]))
+            token = token[64:]
+        print()
+
+    config.verbose = args.verbose
+
+    if args.unique_key:
+        # We cannot both have a given key and use a random
+        # key for each file, but since they have explicitly
+        # asked for unique keys, let's forget about the
+        # given key.
+        if privkey is not None:
+            MYLOG.warning('Warning: ignoring the given private key')
+            MYLOG.warning('since you have explicitly asked for unique keys.')
+            privkey = None
+            # Since they cannot know where the files are uploaded if
+            # the keys are random, let's make sure the mbase32 keys
+            # are printed for each file uploaded.
+            verbose = True
+    elif privkey is None:
+        privkey = get_private_key()
+        verbose = True
+
+    filenames = only_files(args.FILE or readlines(sys.stdin))
+
+    for filename in filenames:
+        print(filename)
+        if args.dry_run:
+            print('\t{0}'.format(get_mime_type(filename)))
+        else:
+            html = mupload(filename, privkey=privkey)
+            keys = RX_ALL_KEYS.findall(html)
+            for (keytype, keylink) in keys:
+                print('\t{0}\n\t\t{1}'.format(keytype, keylink))
+
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main(os.path.basename(sys.argv[0])))
+
+# eof

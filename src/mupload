@@ -206,13 +206,13 @@ def file_magic(filename):
     """Use libmagic to establish filetype"""
     if not USE_MAGIC:
         return (None, None)
-    ms = magic.open(magic.NONE)
-    ms.load()
-    ms.setflags(magic.MIME_TYPE)
-    filetype = ms.file(filename)
-    ms.setflags(magic.MIME_ENCODING)
-    encoding = ms.file(filename)
-    ms.close()
+    hocus = magic.open(magic.NONE)
+    hocus.load()
+    hocus.setflags(magic.MIME_TYPE)
+    filetype = hocus.file(filename)
+    hocus.setflags(magic.MIME_ENCODING)
+    encoding = hocus.file(filename)
+    hocus.close()
     return (filetype, encoding)
 
 
@@ -282,9 +282,9 @@ def mupload(filename, privkey=None):
 def read_private_key_file(filename):
     """Read the private key from a file"""
     try:
-        with open(filename, 'r') as fp:
+        with open(filename, 'r') as fptr:
             # Let's accept multi-line keys
-            privkey = re.sub(r'\s+', '', fp.read())
+            privkey = re.sub(r'\s+', '', fptr.read())
             # Let's accept /dev/null
             if not privkey:
                 return None
@@ -315,10 +315,10 @@ def only_files(iterable, unique=True):
         yield normpath
 
 
-def readlines(fp):
+def readlines(fptr):
     """Iterate over the lines in a file"""
     try:
-        for line in fp:
+        for line in fptr:
             stripped = line.rstrip('\r\n\v\f')
             if not stripped:
                 continue

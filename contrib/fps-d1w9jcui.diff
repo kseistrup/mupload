@@ -1,0 +1,53 @@
+diff --git a/mupload b/mupload
+index 67311cd..5705dd2 100755
+--- a/mupload
++++ b/mupload
+@@ -202,7 +202,7 @@ def get_mime_type(filename, strict=True, default='application/octet-stream'):
+     return filetype or default
+ 
+ 
+-def mupload(filename, privkey=None):
++def mupload(path, filename, privkey=None):
+     """Upload a file to MORPHiS"""
+     if privkey is None:
+         privkey = get_private_key()
+@@ -216,7 +216,7 @@ def mupload(filename, privkey=None):
+     )
+ 
+     form_data = dict(
+-        path=filename,
++        path=path,
+         mime_type=get_mime_type(filename),
+         privateKey=privkey,
+         csrf_token=get_csrf_token(privkey),
+@@ -333,6 +333,12 @@ def main(progname='mupload'):
+         nargs='*',
+         help='file(s) to upload'
+     )
++    parser.add_argument(
++        '-i',
++        '--index',
++        help="The file to upload to the empty path \"\""
++    )
++
+     args = parser.parse_args()
+ 
+     if DEBUG:
+@@ -396,8 +402,16 @@ def main(progname='mupload'):
+             print(filename)
+             print('\t{0}'.format(get_mime_type(filename)))
+         else:
+-            print(mupload(filename, privkey=privkey))
++            print(mupload(filename, filename, privkey=privkey))
++
++    if args.index:
++        if args.dry_run:
++            print(args.index)
++            print('\t{0}'.format(get_mime_type(args.index)))
++        else:
++            print(mupload("", args.index, privkey=privkey))
+ 
++            
+     return 0
+ 
+ if __name__ == '__main__':

@@ -81,8 +81,8 @@ if DEBUG and not USE_MAGIC:
 
 __author__ = 'Klaus Alexander Seistrup <klaus@seistrup.dk>'
 __whoami__ = 'mupload'
-__revision__ = '2017-01-15'
-__version__ = '0.0.5b ({0})'.format(__revision__)
+__revision__ = '2017-01-18'
+__version__ = '0.0.6b ({0})'.format(__revision__)
 __copyright__ = """\
 mupload {0}
 Copyright © 2015-17 Klaus Alexander Seistrup <klaus@seistrup.dk>
@@ -226,12 +226,9 @@ def get_mime_type(filename, strict=True, default='application/octet-stream'):
     # so let's just pretend it's the default type:
     if os.path.getsize(filename) == 0:
         return default
-    # Should we use mime.types (i.e., filetype based on filename extension)
-    # before ‘magic’ (e.g., filetype based on file contents)? Please chime
-    # in on <https://github.com/kseistrup/morphis-upload/issues/3>.
-    (filetype, encoding) = mimetypes.guess_type(filename, strict=strict)
+    (filetype, encoding) = file_magic(filename)
     if filetype is None:
-        (filetype, encoding) = file_magic(filename)
+        (filetype, encoding) = mimetypes.guess_type(filename, strict=strict)
     if encoding in {'binary'}:
         encoding = None
     if None not in (filetype, encoding):

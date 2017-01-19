@@ -65,6 +65,7 @@ except ImportError as error:
 try:
     import magic
     USE_MAGIC = True
+    EPILOG = None
     # Check that we have the correct magic module
     for attribute in ('open', 'NONE', 'MIME_TYPE', 'MIME_ENCODING'):
         if not hasattr(magic, attribute):
@@ -74,6 +75,7 @@ except ImportError as error:
     if DEBUG:
         MYLOG.warning(str(error))
     USE_MAGIC = False
+    EPILOG = 'For better MIME-type handling, please install the “magic” module.'
 
 if DEBUG and not USE_MAGIC:
     MYLOG.warning("Didn't find a usable ‘magic’ module.")
@@ -81,8 +83,8 @@ if DEBUG and not USE_MAGIC:
 
 __author__ = 'Klaus Alexander Seistrup <klaus@seistrup.dk>'
 __whoami__ = 'mupload'
-__revision__ = '2017-01-18'
-__version__ = '0.0.7b ({0})'.format(__revision__)
+__revision__ = '2017-01-19'
+__version__ = '0.0.8b ({0})'.format(__revision__)
 __copyright__ = """\
 mupload {0}
 Copyright © 2015-17 Klaus Alexander Seistrup <klaus@seistrup.dk>
@@ -331,7 +333,8 @@ def main(progname=__whoami__):
 
     parser = argparse.ArgumentParser(
         prog=progname,
-        formatter_class=argparse.RawTextHelpFormatter
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=EPILOG
     )
     parser.add_argument(
         '-V',
